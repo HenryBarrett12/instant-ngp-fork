@@ -23,6 +23,8 @@ from scenes import scenes_nerf, scenes_image, scenes_sdf, scenes_volume, setup_c
 from tqdm import tqdm
 
 import pyngp as ngp # noqa
+import wandb
+
 
 
 def parse_args():
@@ -63,6 +65,9 @@ def parse_args():
 
 if __name__ == "__main__":
 	args = parse_args()
+	wandb.init(project="nerf2", entity="photos2reality")
+	
+	wandb.config = vars(args)
 
 	if args.mode == "":
 		if args.scene in scenes_sdf:
@@ -137,7 +142,6 @@ if __name__ == "__main__":
 
 	testbed.shall_train = args.train if args.gui else True
 
-
 	testbed.nerf.render_with_camera_distortion = True
 
 	network_stem = os.path.splitext(os.path.basename(network))[0]
@@ -176,7 +180,6 @@ if __name__ == "__main__":
 	if n_steps < 0:
 		n_steps = 100000
 
-	tqdm_last_update = 0
 	if n_steps > 0:
 		with tqdm(desc="Training", total=n_steps, unit="step") as t:
 			while testbed.frame():
@@ -194,12 +197,12 @@ if __name__ == "__main__":
 					old_training_step = 0
 					t.reset()
 
-				now = time.monotonic()
-				if now - tqdm_last_update > 0.1:
-					t.update(testbed.training_step - old_training_step)
-					t.set_postfix(loss=testbed.loss)
-					old_training_step = testbed.training_step
-					tqdm_last_update = now
+				t.update(testbed.training_step - old_training_step)
+				t.set_postfix(loss=testbed.loss)
+
+				wandb.log({"loss": testbed.loss, "progress": testbed.training_step / n_steps}, step=testbed.training_step)
+
+				old_training_step = testbed.training_step
 
 	if args.save_snapshot:
 		print("Saving snapshot ", args.save_snapshot)
@@ -230,6 +233,9 @@ if __name__ == "__main__":
 		testbed.fov_axis = 0
 		testbed.fov = test_transforms["camera_angle_x"] * 180 / np.pi
 		testbed.shall_train = False
+
+		wandbTableColumns = ["ImageID", "Image", "Ground-Truth", "MSE", "PSNR", "SSIM"]
+		test_table = wandb.Table(columns=wandbTableColumns)
 
 		with tqdm(list(enumerate(test_transforms["frames"])), unit="images", desc=f"Rendering test frame") as t:
 			for i, frame in t:
@@ -271,7 +277,7 @@ if __name__ == "__main__":
 				if i == 0:
 					write_image("out.png", image)
 
-				diffimg = np.absolute(image - ref_image)
+				diffimg = np.absolute(image[..., :-1] - ref_image)
 				diffimg[...,3:4] = 1.0
 				if i == 0:
 					write_image("diff.png", diffimg)
@@ -288,11 +294,25 @@ if __name__ == "__main__":
 				maxpsnr = psnr if psnr>maxpsnr else maxpsnr
 				totcount = totcount+1
 				t.set_postfix(psnr = totpsnr/(totcount or 1))
+				
+				wandbImageTest = wandb.Image(image)
+				wandbImageGT = wandb.Image(ref_image)
+
+				test_table.add_data(i, wandbImageTest, wandbImageGT, mse, psnr, ssim)
+
+
 
 		psnr_avgmse = mse2psnr(totmse/(totcount or 1))
 		psnr = totpsnr/(totcount or 1)
 		ssim = totssim/(totcount or 1)
 		print(f"PSNR={psnr} [min={minpsnr} max={maxpsnr}] SSIM={ssim}")
+		
+		wandb.log({"TestData": test_table})
+		wandb.run.summary["PSNR"] = psnr
+		wandb.run.summary["PSNR_avgmse"] = psnr_avgmse
+		wandb.run.summary["SSIM"] = ssim
+		wandb.run.summary["min_psnr"] = minpsnr
+		wandb.run.summary["max_psnr"] = maxpsnr
 
 	if args.save_mesh:
 		res = args.marching_cubes_res or 256
