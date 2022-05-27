@@ -65,7 +65,7 @@ def parse_args():
 
 if __name__ == "__main__":
 	args = parse_args()
-	wandb.init(project="nerf2", entity="photos2reality")
+	wandb.init(project="ngp", entity="photos2reality")
 	
 	wandb.config = vars(args)
 
